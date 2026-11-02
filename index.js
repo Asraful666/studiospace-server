@@ -15,6 +15,7 @@ import { createStudioRouter } from "./routes/studios.js";
 import { createUploadRouter } from "./routes/uploads.js";
 import { createHostStudioRouter } from "./routes/host-studios.js";
 import { createManageStudioRouter } from "./routes/manage-studios.js";
+import { createBookingRouter } from "./routes/bookings.js";
 
 const app = express();
 
@@ -43,6 +44,21 @@ async function startServer() {
     const db = await connectDB();
     const client = getMongoClient();
     const auth = createAuth(db, client);
+
+    // Index for personal booking history.
+    await db.collection("bookings").createIndex({
+      userId: 1,
+      createdAt: -1,
+      _id: -1,
+    });
+
+    // Index for confirmed booking overlap queries.
+    await db.collection("bookings").createIndex({
+      studioId: 1,
+      status: 1,
+      startAt: 1,
+      endAt: 1,
+    });
 
     // Better Auth must be mounted before express.json().
     app.all(/^\/api\/auth(?:\/.*)?$/, toNodeHandler(auth));
@@ -88,6 +104,9 @@ async function startServer() {
       "/api/manage/studios",
       createManageStudioRouter(db, auth)
     );
+
+    // Booking creation, personal history, and cancellation.
+    app.use("/api/bookings", createBookingRouter(db, auth));
 
     // Keep /mine before the public /:id route.
     app.use("/api/studios", createHostStudioRouter(db, auth));
@@ -141,7 +160,7 @@ async function startServer() {
   } catch (error) {
     console.error("Startup failed:", error.name);
     console.error(
-      "Check the database connection and required authentication environment variables."
+      "Check the database connection, database indexes, and required authentication environment variables."
     );
 
     await closeDB();
