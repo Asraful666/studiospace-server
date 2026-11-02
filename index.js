@@ -1,7 +1,18 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import { connectDB, closeDB } from "./config/db.js";
+import {
+  toNodeHandler,
+  fromNodeHeaders,
+} from "better-auth/node";
+
+import {
+  connectDB,
+  closeDB,
+  getMongoClient,
+} from "./config/db.js";
+
+import { createAuth } from "./config/auth.js";
 import { createStudioRouter } from "./routes/studios.js";
 
 const app = express();
@@ -17,8 +28,6 @@ app.use(
   })
 );
 
-app.use(express.json());
-
 app.get("/", (req, res) => {
   res.json({
     success: true,
@@ -31,6 +40,15 @@ let server;
 async function startServer() {
   try {
     const db = await connectDB();
+    const client = getMongoClient();
+    const auth = createAuth(db, client);
+
+    // Full request URL is preserved.
+    // Regex route works without Express wildcard-version differences.
+    app.all(/^\/api\/auth(?:\/.*)?$/, toNodeHandler(auth));
+
+    // Must be AFTER Better Auth.
+    app.use(express.json());
 
     app.get("/api/health", async (req, res) => {
       try {
@@ -46,6 +64,33 @@ async function startServer() {
           success: false,
           message: "Database is unavailable.",
         });
+      }
+    });
+
+    app.get("/api/me", async (req, res, next) => {
+      try {
+        const session = await auth.api.getSession({
+          headers: fromNodeHeaders(req.headers),
+        });
+
+        if (!session) {
+          return res.status(401).json({
+            success: false,
+            message: "Please log in to continue.",
+          });
+        }
+
+        res.json({
+          success: true,
+          user: {
+            id: session.user.id,
+            name: session.user.name,
+            email: session.user.email,
+            image: session.user.image,
+          },
+        });
+      } catch (error) {
+        next(error);
       }
     });
 
@@ -75,6 +120,7 @@ async function startServer() {
 
     server = app.listen(port, () => {
       console.log(`StudioSpace API: http://localhost:${port}`);
+      console.log("Better Auth is ready.");
     });
 
     server.on("error", async (error) => {
@@ -85,7 +131,7 @@ async function startServer() {
   } catch (error) {
     console.error("Startup failed:", error.name);
     console.error(
-      "Check MongoDB environment variables, database credentials, and IP access."
+      "Check database connection and required authentication environment variables."
     );
 
     await closeDB();

@@ -51,3 +51,10 @@ export async function closeDB() {
     database = undefined;
   }
 }
+export function getMongoClient() {
+  if (!client || !database) {
+    throw new Error("Connect to MongoDB before accessing the client.");
+  }
+
+  return client;
+}
