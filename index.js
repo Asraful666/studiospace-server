@@ -1,10 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import {
-  toNodeHandler,
-  fromNodeHeaders,
-} from "better-auth/node";
+import { toNodeHandler } from "better-auth/node";
 
 import {
   connectDB,
@@ -14,6 +11,7 @@ import {
 
 import { createAuth } from "./config/auth.js";
 import { createStudioRouter } from "./routes/studios.js";
+import { requireSession } from "./middleware/auth.js";
 
 const app = express();
 
@@ -43,11 +41,9 @@ async function startServer() {
     const client = getMongoClient();
     const auth = createAuth(db, client);
 
-    // Full request URL is preserved.
-    // Regex route works without Express wildcard-version differences.
+    // Keep the auth handler before express.json().
     app.all(/^\/api\/auth(?:\/.*)?$/, toNodeHandler(auth));
 
-    // Must be AFTER Better Auth.
     app.use(express.json());
 
     app.get("/api/health", async (req, res) => {
@@ -67,31 +63,16 @@ async function startServer() {
       }
     });
 
-    app.get("/api/me", async (req, res, next) => {
-      try {
-        const session = await auth.api.getSession({
-          headers: fromNodeHeaders(req.headers),
-        });
-
-        if (!session) {
-          return res.status(401).json({
-            success: false,
-            message: "Please log in to continue.",
-          });
-        }
-
-        res.json({
-          success: true,
-          user: {
-            id: session.user.id,
-            name: session.user.name,
-            email: session.user.email,
-            image: session.user.image,
-          },
-        });
-      } catch (error) {
-        next(error);
-      }
+    app.get("/api/me", requireSession(auth), (req, res) => {
+      res.json({
+        success: true,
+        user: {
+          id: req.user.id,
+          name: req.user.name,
+          email: req.user.email,
+          image: req.user.image,
+        },
+      });
     });
 
     app.use("/api/studios", createStudioRouter(db));
@@ -104,7 +85,9 @@ async function startServer() {
     });
 
     app.use((error, req, res, next) => {
-      if (res.headersSent) return next(error);
+      if (res.headersSent) {
+        return next(error);
+      }
 
       console.error("Request failed:", error.name);
 
@@ -124,14 +107,21 @@ async function startServer() {
     });
 
     server.on("error", async (error) => {
-      console.error("Server failed:", error.code);
+      if (error.code === "EADDRINUSE") {
+        console.error(
+          `Port ${port} is already in use. Stop the other server, then restart StudioSpace.`
+        );
+      } else {
+        console.error("Server failed:", error.code || error.name);
+      }
+
       await closeDB();
       process.exit(1);
     });
   } catch (error) {
     console.error("Startup failed:", error.name);
     console.error(
-      "Check database connection and required authentication environment variables."
+      "Check the database connection and required authentication environment variables."
     );
 
     await closeDB();
