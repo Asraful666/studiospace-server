@@ -2,10 +2,9 @@ import express from "express";
 import { ObjectId } from "mongodb";
 import { getMongoClient } from "../config/db.js";
 import {
-  requireSession,
+  requireApiAuth as requireSession,
   requireTrustedOrigin,
 } from "../middleware/auth.js";
-
 const categories = [
   "Photo Studio",
   "Film Stage",

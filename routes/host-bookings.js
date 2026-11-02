@@ -1,10 +1,9 @@
 import express from "express";
 import { ObjectId } from "mongodb";
 import {
-  requireSession,
+  requireApiAuth as requireSession,
   requireTrustedOrigin,
 } from "../middleware/auth.js";
-
 function requestError(status, message) {
   const error = new Error(message);
   error.httpStatus = status;

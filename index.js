@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import cookieParser from "cookie-parser";
 import { toNodeHandler } from "better-auth/node";
 
 import {
@@ -10,7 +11,8 @@ import {
 } from "./config/db.js";
 
 import { createAuth } from "./config/auth.js";
-import { requireSession } from "./middleware/auth.js";
+import { requireApiAuth } from "./middleware/auth.js";
+import { createTokenRouter } from "./routes/token.js";
 import { createStudioRouter } from "./routes/studios.js";
 import { createUploadRouter } from "./routes/uploads.js";
 import { createHostStudioRouter } from "./routes/host-studios.js";
@@ -72,6 +74,10 @@ async function startServer() {
     app.all(/^\/api\/auth(?:\/.*)?$/, toNodeHandler(auth));
 
     app.use(express.json());
+    app.use(cookieParser());
+
+    // Issue an HTTPOnly JWT cookie after validating the login session.
+    app.use("/api/token", createTokenRouter(auth));
 
     app.get("/api/health", async (req, res) => {
       try {
@@ -90,7 +96,8 @@ async function startServer() {
       }
     });
 
-    app.get("/api/me", requireSession(auth), (req, res) => {
+    // Require both a valid session and a matching JWT.
+    app.get("/api/me", requireApiAuth(auth), (req, res) => {
       res.set("Cache-Control", "no-store");
 
       res.json({
@@ -156,7 +163,7 @@ async function startServer() {
 
     server = app.listen(port, () => {
       console.log(`StudioSpace API: http://localhost:${port}`);
-      console.log("Better Auth is ready.");
+      console.log("Better Auth and JWT access are ready.");
     });
 
     server.on("error", async (error) => {
@@ -174,7 +181,7 @@ async function startServer() {
   } catch (error) {
     console.error("Startup failed:", error.name);
     console.error(
-      "Check the database connection, database indexes, and required authentication environment variables."
+      "Check the database connection, database indexes, authentication environment variables, and JWT_SECRET."
     );
 
     await closeDB();

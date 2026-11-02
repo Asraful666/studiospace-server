@@ -2,10 +2,9 @@ import express from "express";
 import { ObjectId } from "mongodb";
 import { getMongoClient } from "../config/db.js";
 import {
-  requireSession,
+  requireApiAuth as requireSession,
   requireTrustedOrigin,
 } from "../middleware/auth.js";
-
 function validId(value) {
   return typeof value === "string" && /^[a-fA-F0-9]{24}$/.test(value);
 }

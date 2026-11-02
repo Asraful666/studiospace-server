@@ -1,10 +1,9 @@
 import express from "express";
 import multer from "multer";
 import {
-  requireSession,
+  requireApiAuth as requireSession,
   requireTrustedOrigin,
 } from "../middleware/auth.js";
-
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {

@@ -1,9 +1,8 @@
 import express from "express";
 import {
-  requireSession,
+  requireApiAuth as requireSession,
   requireTrustedOrigin,
 } from "../middleware/auth.js";
-
 const categories = [
   "Photo Studio",
   "Film Stage",
