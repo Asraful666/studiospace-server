@@ -10,10 +10,11 @@ import {
 } from "./config/db.js";
 
 import { createAuth } from "./config/auth.js";
-import { createStudioRouter } from "./routes/studios.js";
 import { requireSession } from "./middleware/auth.js";
+import { createStudioRouter } from "./routes/studios.js";
 import { createUploadRouter } from "./routes/uploads.js";
 import { createHostStudioRouter } from "./routes/host-studios.js";
+import { createManageStudioRouter } from "./routes/manage-studios.js";
 
 const app = express();
 
@@ -43,7 +44,7 @@ async function startServer() {
     const client = getMongoClient();
     const auth = createAuth(db, client);
 
-    // Keep the auth handler before express.json().
+    // Better Auth must be mounted before express.json().
     app.all(/^\/api\/auth(?:\/.*)?$/, toNodeHandler(auth));
 
     app.use(express.json());
@@ -66,6 +67,8 @@ async function startServer() {
     });
 
     app.get("/api/me", requireSession(auth), (req, res) => {
+      res.set("Cache-Control", "no-store");
+
       res.json({
         success: true,
         user: {
@@ -77,12 +80,22 @@ async function startServer() {
       });
     });
 
-  app.use("/api/uploads", createUploadRouter(auth));
+    // Authenticated image uploads.
+    app.use("/api/uploads", createUploadRouter(auth));
 
-app.use("/api/studios", createHostStudioRouter(db, auth));
+    // Owner-only studio lookup, update, and delete.
+    app.use(
+      "/api/manage/studios",
+      createManageStudioRouter(db, auth)
+    );
 
-app.use("/api/studios", createStudioRouter(db));
+    // Keep /mine before the public /:id route.
+    app.use("/api/studios", createHostStudioRouter(db, auth));
 
+    // Public studio list, featured studios, and details.
+    app.use("/api/studios", createStudioRouter(db));
+
+    // Unmatched API routes.
     app.use((req, res) => {
       res.status(404).json({
         success: false,
@@ -90,6 +103,7 @@ app.use("/api/studios", createStudioRouter(db));
       });
     });
 
+    // Central error handler.
     app.use((error, req, res, next) => {
       if (res.headersSent) {
         return next(error);
