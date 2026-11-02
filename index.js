@@ -12,6 +12,8 @@ import {
 import { createAuth } from "./config/auth.js";
 import { createStudioRouter } from "./routes/studios.js";
 import { requireSession } from "./middleware/auth.js";
+import { createUploadRouter } from "./routes/uploads.js";
+import { createHostStudioRouter } from "./routes/host-studios.js";
 
 const app = express();
 
@@ -75,7 +77,11 @@ async function startServer() {
       });
     });
 
-    app.use("/api/studios", createStudioRouter(db));
+  app.use("/api/uploads", createUploadRouter(auth));
+
+app.use("/api/studios", createHostStudioRouter(db, auth));
+
+app.use("/api/studios", createStudioRouter(db));
 
     app.use((req, res) => {
       res.status(404).json({
