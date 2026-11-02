@@ -1,5 +1,6 @@
 import express from "express";
 import { ObjectId } from "mongodb";
+import { getMongoClient } from "../config/db.js";
 import {
   requireSession,
   requireTrustedOrigin,
@@ -32,7 +33,9 @@ function validMoney(value, min) {
 }
 
 function validImage(value) {
-  if (typeof value !== "string" || value.length > 2000) return false;
+  if (typeof value !== "string" || value.length > 2000) {
+    return false;
+  }
 
   try {
     const url = new URL(value);
@@ -50,6 +53,7 @@ function validImage(value) {
 export function createManageStudioRouter(db, auth) {
   const router = express.Router();
   const studios = db.collection("studios");
+  const bookings = db.collection("bookings");
 
   router.use(requireSession(auth));
 
@@ -70,6 +74,7 @@ export function createManageStudioRouter(db, auth) {
     next();
   });
 
+  // Get a studio owned by the signed-in user.
   router.get("/:id", async (req, res, next) => {
     try {
       const studio = await studios.findOne(req.studioFilter);
@@ -92,6 +97,7 @@ export function createManageStudioRouter(db, auth) {
     }
   });
 
+  // Update only permitted studio fields.
   router.patch("/:id", requireTrustedOrigin, async (req, res, next) => {
     try {
       const body = req.body ?? {};
@@ -127,7 +133,7 @@ export function createManageStudioRouter(db, auth) {
         });
       }
 
-      // Keep additional gallery images when the cover image changes.
+      // Preserve additional gallery images when replacing the cover.
       const gallery = [
         ...new Set([
           body.imageUrl,
@@ -171,23 +177,72 @@ export function createManageStudioRouter(db, auth) {
     }
   });
 
+  // Delete an owned studio only when it has no booking history.
   router.delete("/:id", requireTrustedOrigin, async (req, res, next) => {
+    const session = getMongoClient().startSession();
+
     try {
-      const result = await studios.deleteOne(req.studioFilter);
+      const outcome = await session.withTransaction(
+        async () => {
+          // Coordinate with booking creation and confirmation transactions.
+          const locked = await studios.updateOne(
+            req.studioFilter,
+            {
+              $inc: { bookingRevision: 1 },
+            },
+            { session }
+          );
 
-      if (!result.deletedCount) {
-        return res.status(404).json({
-          success: false,
-          message: "Studio not found in your listings.",
-        });
-      }
+          if (!locked.matchedCount) {
+            return {
+              status: 404,
+              success: false,
+              message: "Studio not found in your listings.",
+            };
+          }
 
-      res.json({
-        success: true,
-        message: "Studio deleted successfully.",
+          const booking = await bookings.findOne(
+            {
+              studioId: req.studioFilter._id,
+            },
+            {
+              session,
+              projection: { _id: 1 },
+            }
+          );
+
+          if (booking) {
+            return {
+              status: 409,
+              success: false,
+              message:
+                "This studio has booking history and cannot be deleted. You can edit its details.",
+            };
+          }
+
+          await studios.deleteOne(req.studioFilter, { session });
+
+          return {
+            status: 200,
+            success: true,
+            message: "Studio deleted successfully.",
+          };
+        },
+        {
+          readPreference: "primary",
+          readConcern: { level: "snapshot" },
+          writeConcern: { w: "majority" },
+        }
+      );
+
+      res.status(outcome.status).json({
+        success: outcome.success,
+        message: outcome.message,
       });
     } catch (error) {
       next(error);
+    } finally {
+      await session.endSession();
     }
   });
 

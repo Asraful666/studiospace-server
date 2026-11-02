@@ -1,5 +1,6 @@
 import express from "express";
 import { ObjectId } from "mongodb";
+import { getMongoClient } from "../config/db.js";
 import {
   requireSession,
   requireTrustedOrigin,
@@ -24,7 +25,6 @@ function parseBookingTime(date, startHour, endHour) {
     return null;
   }
 
-  // Verify that the date exists, including month lengths and leap years.
   const calendarDate = new Date(`${date}T00:00:00.000Z`);
 
   if (
@@ -34,7 +34,7 @@ function parseBookingTime(date, startHour, endHour) {
     return null;
   }
 
-  // Bangladesh local midnight converted to a UTC instant.
+  // Bangladesh time: UTC+06:00.
   const midnight = new Date(`${date}T00:00:00+06:00`).getTime();
 
   return {
@@ -62,10 +62,9 @@ export function createBookingRouter(db, auth) {
   const bookings = db.collection("bookings");
   const studios = db.collection("studios");
 
-  // All booking endpoints require a valid session.
   router.use(requireSession(auth));
 
-  // Get only the signed-in user's bookings.
+  // Get the signed-in user's bookings.
   router.get("/mine", async (req, res, next) => {
     try {
       const rawPage = req.query.page ?? "1";
@@ -92,6 +91,7 @@ export function createBookingRouter(db, auth) {
           .skip((page - 1) * limit)
           .limit(limit)
           .toArray(),
+
         bookings.countDocuments(filter),
       ]);
 
@@ -112,7 +112,7 @@ export function createBookingRouter(db, auth) {
     }
   });
 
-  // Create a new Pending booking.
+  // Create a Pending booking.
   router.post("/", requireTrustedOrigin, async (req, res, next) => {
     try {
       const {
@@ -156,7 +156,8 @@ export function createBookingRouter(db, auth) {
       ) {
         return res.status(400).json({
           success: false,
-          message: "Enter a valid guest count and a note under 1000 characters.",
+          message:
+            "Enter a valid guest count and a note of at most 1000 characters.",
         });
       }
 
@@ -201,26 +202,8 @@ export function createBookingRouter(db, auth) {
       ) {
         return res.status(409).json({
           success: false,
-          message: "This studio's pricing needs to be updated before booking.",
-        });
-      }
-
-      // Adjacent bookings are allowed:
-      // 10:00–12:00 does not overlap 12:00–14:00.
-      const conflict = await bookings.findOne(
-        {
-          studioId: studio._id,
-          status: "Confirmed",
-          startAt: { $lt: bookingTime.endAt },
-          endAt: { $gt: bookingTime.startAt },
-        },
-        { projection: { _id: 1 } }
-      );
-
-      if (conflict) {
-        return res.status(409).json({
-          success: false,
-          message: "This time overlaps a confirmed booking. Choose another time.",
+          message:
+            "This studio's pricing needs to be updated before booking.",
         });
       }
 
@@ -229,9 +212,10 @@ export function createBookingRouter(db, auth) {
       const now = new Date();
 
       const booking = {
+        _id: new ObjectId(),
         studioId: studio._id,
 
-        // Store a snapshot so booking history retains the original details.
+        // Preserve the studio details quoted at booking time.
         studioTitle: studio.title,
         studioImageUrl: studio.imageUrl,
         studioLocation: studio.location,
@@ -263,22 +247,107 @@ export function createBookingRouter(db, auth) {
         updatedAt: now,
       };
 
-      const result = await bookings.insertOne(booking);
+      const mongoSession = getMongoClient().startSession();
+      let outcome;
+
+      try {
+        outcome = await mongoSession.withTransaction(
+          async () => {
+            // Recheck time if the transaction is retried.
+            if (booking.startAt.getTime() <= Date.now()) {
+              return {
+                status: 400,
+                message: "Booking must start in the future.",
+              };
+            }
+
+            /*
+             * Coordinate with studio deletion and host confirmation.
+             * Also verify that the studio details used for this quote
+             * have not changed.
+             */
+            const locked = await studios.updateOne(
+              {
+                _id: studio._id,
+                hourlyRate: studio.hourlyRate,
+                securityDeposit: studio.securityDeposit,
+                maxCapacity: studio.maxCapacity,
+                updatedAt: studio.updatedAt,
+              },
+              {
+                $inc: { bookingRevision: 1 },
+              },
+              { session: mongoSession }
+            );
+
+            if (!locked.matchedCount) {
+              return {
+                status: 409,
+                message:
+                  "The studio details changed or it is no longer available. Refresh and try again.",
+              };
+            }
+
+            // Adjacent bookings are allowed; overlapping ones are not.
+            const overlap = await bookings.findOne(
+              {
+                studioId: studio._id,
+                status: "Confirmed",
+                startAt: { $lt: booking.endAt },
+                endAt: { $gt: booking.startAt },
+              },
+              {
+                session: mongoSession,
+                projection: { _id: 1 },
+              }
+            );
+
+            if (overlap) {
+              return {
+                status: 409,
+                message:
+                  "This time overlaps a confirmed booking. Choose another time.",
+              };
+            }
+
+            // Insert only inside the transaction.
+            await bookings.insertOne(booking, {
+              session: mongoSession,
+            });
+
+            return {
+              status: 201,
+              message: "Booking request submitted.",
+            };
+          },
+          {
+            readPreference: "primary",
+            readConcern: { level: "snapshot" },
+            writeConcern: { w: "majority" },
+          }
+        );
+      } finally {
+        await mongoSession.endSession();
+      }
+
+      if (outcome.status !== 201) {
+        return res.status(outcome.status).json({
+          success: false,
+          message: outcome.message,
+        });
+      }
 
       res.status(201).json({
         success: true,
-        message: "Booking request submitted.",
-        data: {
-          ...booking,
-          _id: result.insertedId,
-        },
+        message: outcome.message,
+        data: booking,
       });
     } catch (error) {
       next(error);
     }
   });
 
-  // A user can cancel only their own Pending booking.
+  // Cancel only the signed-in user's Pending booking.
   router.patch(
     "/:id/cancel",
     requireTrustedOrigin,
@@ -298,7 +367,7 @@ export function createBookingRouter(db, auth) {
 
         const now = new Date();
 
-        // Status check and update happen in one database operation.
+        // Check status and update atomically.
         const result = await bookings.updateOne(
           {
             ...filter,

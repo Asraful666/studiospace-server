@@ -16,6 +16,7 @@ import { createUploadRouter } from "./routes/uploads.js";
 import { createHostStudioRouter } from "./routes/host-studios.js";
 import { createManageStudioRouter } from "./routes/manage-studios.js";
 import { createBookingRouter } from "./routes/bookings.js";
+import { createHostBookingRouter } from "./routes/host-bookings.js";
 
 const app = express();
 
@@ -45,19 +46,26 @@ async function startServer() {
     const client = getMongoClient();
     const auth = createAuth(db, client);
 
-    // Index for personal booking history.
+    // Personal booking history.
     await db.collection("bookings").createIndex({
       userId: 1,
       createdAt: -1,
       _id: -1,
     });
 
-    // Index for confirmed booking overlap queries.
+    // Confirmed booking overlap queries.
     await db.collection("bookings").createIndex({
       studioId: 1,
       status: 1,
       startAt: 1,
       endAt: 1,
+    });
+
+    // Host booking history.
+    await db.collection("bookings").createIndex({
+      ownerId: 1,
+      createdAt: -1,
+      _id: -1,
     });
 
     // Better Auth must be mounted before express.json().
@@ -103,6 +111,12 @@ async function startServer() {
     app.use(
       "/api/manage/studios",
       createManageStudioRouter(db, auth)
+    );
+
+    // Host booking requests, confirmation, and rejection.
+    app.use(
+      "/api/host/bookings",
+      createHostBookingRouter(db, client, auth)
     );
 
     // Booking creation, personal history, and cancellation.
