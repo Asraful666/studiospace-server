@@ -19,6 +19,7 @@ import { createHostStudioRouter } from "./routes/host-studios.js";
 import { createManageStudioRouter } from "./routes/manage-studios.js";
 import { createBookingRouter } from "./routes/bookings.js";
 import { createHostBookingRouter } from "./routes/host-bookings.js";
+import { createNewsletterRouter } from "./routes/newsletter.js";
 
 const app = express();
 
@@ -70,13 +71,19 @@ async function startServer() {
       _id: -1,
     });
 
+    // Prevent duplicate newsletter email entries.
+    await db.collection("newsletterSubscribers").createIndex(
+      { email: 1 },
+      { unique: true }
+    );
+
     // Better Auth must be mounted before express.json().
     app.all(/^\/api\/auth(?:\/.*)?$/, toNodeHandler(auth));
 
     app.use(express.json());
     app.use(cookieParser());
 
-    // Issue an HTTPOnly JWT cookie after validating the login session.
+    // Issue an HTTPOnly JWT cookie using the login session.
     app.use("/api/token", createTokenRouter(auth));
 
     app.get("/api/health", async (req, res) => {
@@ -110,6 +117,9 @@ async function startServer() {
         },
       });
     });
+
+    // Public newsletter interest registration.
+    app.use("/api/newsletter", createNewsletterRouter(db));
 
     // Authenticated image uploads.
     app.use("/api/uploads", createUploadRouter(auth));
