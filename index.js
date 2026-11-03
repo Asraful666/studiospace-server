@@ -12,6 +12,7 @@ import {
 
 import { createAuth } from "./config/auth.js";
 import { requireApiAuth } from "./middleware/auth.js";
+
 import { createTokenRouter } from "./routes/token.js";
 import { createStudioRouter } from "./routes/studios.js";
 import { createUploadRouter } from "./routes/uploads.js";
@@ -21,10 +22,13 @@ import { createBookingRouter } from "./routes/bookings.js";
 import { createHostBookingRouter } from "./routes/host-bookings.js";
 import { createNewsletterRouter } from "./routes/newsletter.js";
 import { createReviewRouter } from "./routes/reviews.js";
+import { createWishlistRouter } from "./routes/wishlist.js";
+import { createInvoiceRouter } from "./routes/invoices.js";
 
 const app = express();
 
 const port = Number(process.env.PORT) || 8000;
+
 const clientOrigin =
   process.env.CLIENT_ORIGIN || "http://localhost:3000";
 
@@ -91,6 +95,17 @@ async function startServer() {
       _id: -1,
     });
 
+    // Prevent duplicate saved studios for the same user.
+    await db.collection("wishlist").createIndex(
+      {
+        userId: 1,
+        studioId: 1,
+      },
+      {
+        unique: true,
+      }
+    );
+
     // Better Auth must be mounted before express.json().
     app.all(/^\/api\/auth(?:\/.*)?$/, toNodeHandler(auth));
 
@@ -136,7 +151,10 @@ async function startServer() {
     app.use("/api/newsletter", createNewsletterRouter(db));
 
     // Public review reading and protected review submission.
-    app.use("/api/reviews", createReviewRouter(db, client, auth));
+    app.use(
+      "/api/reviews",
+      createReviewRouter(db, client, auth)
+    );
 
     // Authenticated image uploads.
     app.use("/api/uploads", createUploadRouter(auth));
@@ -153,11 +171,29 @@ async function startServer() {
       createHostBookingRouter(db, client, auth)
     );
 
+    // Personal saved studios: list, save, and remove.
+    app.use(
+      "/api/wishlist",
+      createWishlistRouter(db, auth)
+    );
+
+    // Download PDF receipts for the user's eligible bookings.
+    app.use(
+      "/api/bookings",
+      createInvoiceRouter(db, auth)
+    );
+
     // Booking creation, personal history, and cancellation.
-    app.use("/api/bookings", createBookingRouter(db, auth));
+    app.use(
+      "/api/bookings",
+      createBookingRouter(db, auth)
+    );
 
     // Keep /mine before the public /:id route.
-    app.use("/api/studios", createHostStudioRouter(db, auth));
+    app.use(
+      "/api/studios",
+      createHostStudioRouter(db, auth)
+    );
 
     // Public studio list, featured studios, and details.
     app.use("/api/studios", createStudioRouter(db));
@@ -178,7 +214,8 @@ async function startServer() {
 
       console.error("Request failed:", error.name);
 
-      const isInvalidJson = error.type === "entity.parse.failed";
+      const isInvalidJson =
+        error.type === "entity.parse.failed";
 
       res.status(isInvalidJson ? 400 : 500).json({
         success: false,
@@ -191,6 +228,7 @@ async function startServer() {
     server = app.listen(port, () => {
       console.log(`StudioSpace API: http://localhost:${port}`);
       console.log("Better Auth and JWT access are ready.");
+      console.log("Wishlist and booking PDF routes are ready.");
     });
 
     server.on("error", async (error) => {
@@ -199,7 +237,10 @@ async function startServer() {
           `Port ${port} is already in use. Stop the other server, then restart StudioSpace.`
         );
       } else {
-        console.error("Server failed:", error.code || error.name);
+        console.error(
+          "Server failed:",
+          error.code || error.name
+        );
       }
 
       await closeDB();
@@ -207,6 +248,7 @@ async function startServer() {
     });
   } catch (error) {
     console.error("Startup failed:", error.name);
+
     console.error(
       "Check the database connection, database indexes, authentication environment variables, and JWT_SECRET."
     );
@@ -236,4 +278,3 @@ process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
 startServer();
-
