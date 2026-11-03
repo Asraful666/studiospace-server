@@ -20,6 +20,7 @@ import { createManageStudioRouter } from "./routes/manage-studios.js";
 import { createBookingRouter } from "./routes/bookings.js";
 import { createHostBookingRouter } from "./routes/host-bookings.js";
 import { createNewsletterRouter } from "./routes/newsletter.js";
+import { createReviewRouter } from "./routes/reviews.js";
 
 const app = express();
 
@@ -77,6 +78,19 @@ async function startServer() {
       { unique: true }
     );
 
+    // Allow only one review per booking.
+    await db.collection("reviews").createIndex(
+      { bookingId: 1 },
+      { unique: true }
+    );
+
+    // Studio review list.
+    await db.collection("reviews").createIndex({
+      studioId: 1,
+      createdAt: -1,
+      _id: -1,
+    });
+
     // Better Auth must be mounted before express.json().
     app.all(/^\/api\/auth(?:\/.*)?$/, toNodeHandler(auth));
 
@@ -121,6 +135,9 @@ async function startServer() {
     // Public newsletter interest registration.
     app.use("/api/newsletter", createNewsletterRouter(db));
 
+    // Public review reading and protected review submission.
+    app.use("/api/reviews", createReviewRouter(db, client, auth));
+
     // Authenticated image uploads.
     app.use("/api/uploads", createUploadRouter(auth));
 
@@ -130,7 +147,7 @@ async function startServer() {
       createManageStudioRouter(db, auth)
     );
 
-    // Host booking requests, confirmation, and rejection.
+    // Host booking requests and status changes.
     app.use(
       "/api/host/bookings",
       createHostBookingRouter(db, client, auth)
