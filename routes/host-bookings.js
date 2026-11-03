@@ -4,10 +4,21 @@ import {
   requireApiAuth as requireSession,
   requireTrustedOrigin,
 } from "../middleware/auth.js";
+
 function requestError(status, message) {
   const error = new Error(message);
   error.httpStatus = status;
   return error;
+}
+
+function validBookingTime(booking) {
+  return (
+    booking.startAt instanceof Date &&
+    booking.endAt instanceof Date &&
+    Number.isFinite(booking.startAt.getTime()) &&
+    Number.isFinite(booking.endAt.getTime()) &&
+    booking.endAt > booking.startAt
+  );
 }
 
 export function createHostBookingRouter(db, client, auth) {
@@ -17,7 +28,6 @@ export function createHostBookingRouter(db, client, auth) {
 
   router.use(requireSession(auth));
 
-  // List booking requests for this host.
   router.get("/", async (req, res, next) => {
     try {
       const rawPage = req.query.page ?? "1";
@@ -38,6 +48,7 @@ export function createHostBookingRouter(db, client, auth) {
         "All",
         "Pending",
         "Confirmed",
+        "Completed",
         "Cancelled",
         "Rejected",
       ];
@@ -91,7 +102,6 @@ export function createHostBookingRouter(db, client, auth) {
     }
   });
 
-  // Confirm or reject a Pending booking.
   router.patch(
     "/:id/status",
     requireTrustedOrigin,
@@ -105,10 +115,10 @@ export function createHostBookingRouter(db, client, auth) {
 
       const status = req.body?.status;
 
-      if (!["Confirmed", "Rejected"].includes(status)) {
+      if (!["Confirmed", "Rejected", "Completed"].includes(status)) {
         return res.status(400).json({
           success: false,
-          message: "Choose Confirmed or Rejected.",
+          message: "Choose Confirmed, Rejected, or Completed.",
         });
       }
 
@@ -129,18 +139,19 @@ export function createHostBookingRouter(db, client, auth) {
               throw requestError(404, "Booking request not found.");
             }
 
-            if (booking.status !== "Pending") {
+            const expectedStatus =
+              status === "Completed" ? "Confirmed" : "Pending";
+
+            if (booking.status !== expectedStatus) {
               throw requestError(
                 409,
-                "Only Pending booking requests can be changed."
+                status === "Completed"
+                  ? "Only Confirmed bookings can be completed."
+                  : "Only Pending booking requests can be confirmed or rejected."
               );
             }
 
-            /*
-             * Every confirmation writes to the same studio document.
-             * Concurrent requests for this studio therefore conflict,
-             * causing the transaction to retry against fresh data.
-             */
+            // Coordinate with booking creation, confirmation, and deletion.
             const studioResult = await studios.updateOne(
               {
                 _id: booking.studioId,
@@ -160,20 +171,16 @@ export function createHostBookingRouter(db, client, auth) {
               );
             }
 
-            if (status === "Confirmed") {
-              if (
-                !(booking.startAt instanceof Date) ||
-                !(booking.endAt instanceof Date) ||
-                !Number.isFinite(booking.startAt.getTime()) ||
-                !Number.isFinite(booking.endAt.getTime()) ||
-                booking.endAt <= booking.startAt
-              ) {
+            if (status === "Confirmed" || status === "Completed") {
+              if (!validBookingTime(booking)) {
                 throw requestError(
                   409,
                   "This booking has an invalid time range."
                 );
               }
+            }
 
+            if (status === "Confirmed") {
               if (booking.startAt.getTime() <= Date.now()) {
                 throw requestError(
                   409,
@@ -203,21 +210,39 @@ export function createHostBookingRouter(db, client, auth) {
               }
             }
 
+            if (
+              status === "Completed" &&
+              booking.endAt.getTime() > Date.now()
+            ) {
+              throw requestError(
+                409,
+                "This session has not ended yet. Complete it after its end time."
+              );
+            }
+
             const now = new Date();
+
+            const changes = {
+              status,
+              updatedAt: now,
+            };
+
+            if (status === "Completed") {
+              changes.completedAt = now;
+              changes.completedBy = req.user.id;
+            } else {
+              changes.reviewedAt = now;
+              changes.reviewedBy = req.user.id;
+            }
 
             const update = await bookings.updateOne(
               {
                 _id: booking._id,
                 ownerId: req.user.id,
-                status: "Pending",
+                status: expectedStatus,
               },
               {
-                $set: {
-                  status,
-                  updatedAt: now,
-                  reviewedAt: now,
-                  reviewedBy: req.user.id,
-                },
+                $set: changes,
               },
               { session }
             );
@@ -241,12 +266,15 @@ export function createHostBookingRouter(db, client, auth) {
           }
         );
 
+        const messages = {
+          Confirmed: "Booking confirmed successfully.",
+          Rejected: "Booking request rejected.",
+          Completed: "Booking marked as completed.",
+        };
+
         res.json({
           success: true,
-          message:
-            status === "Confirmed"
-              ? "Booking confirmed successfully."
-              : "Booking request rejected.",
+          message: messages[status],
           data: result,
         });
       } catch (error) {
